@@ -1,0 +1,6 @@
+---
+projectName: WurstQuadTree
+buildMapData:
+  name: MyMapName
+  fileName: MyMapFile
+  author: Cokem

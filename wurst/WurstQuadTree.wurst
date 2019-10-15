@@ -1,0 +1,181 @@
+package WurstQuadTree
+
+import ErrorHandling
+
+constant EMPTY4 = maybe4(0, 0, 0, 0, 0)
+
+constant HAVE_4SECTED = -1
+
+
+function vec2.avg(vec2 rhs) returns vec2
+    return vec2(0.5 * (this.x + rhs.x), 0.5 * (this.y + rhs.y))
+
+function rect.contains(rect rhs) returns bool
+    return this.contains(rhs.getLeftBot()) and this.contains(rhs.getRightTop())
+
+tuple maybe_rect(bool have, rect v)
+
+function rect.intersects(rect rhs) returns maybe_rect
+    let x5 = max(this.getMinX(), rhs.getMinX())
+    let y5 = max(this.getMinY(), rhs.getMinY())
+    let x6 = min(this.getMaxX(), rhs.getMaxX())
+    let y6 = min(this.getMaxY(), this.getMaxY())
+
+    if x5 < x6 and y5 < y6
+        return maybe_rect(true, Rect(x5, y5, x6, y6))
+    else
+        return maybe_rect(false, null)
+
+function rect.into_top_left_quadrant() returns rect
+    return this..resize(this.getLeftTop().avg(this.getLeftBot()), this.getLeftTop().avg(this.getRightTop()))
+function rect.into_top_right_quadrant() returns rect
+    return this..resize(this.getCenter(), this.getRightTop())
+function rect.into_bot_left_quadrant() returns rect
+    return this..resize(this.getLeftBot(), this.getCenter())
+function rect.into_bot_right_quadrant() returns rect
+    return this..resize(this.getLeftBot().avg(this.getRightBot()), this.getRightBot().avg(this.getRightTop()))
+
+tuple maybe4(int count, int a, int b, int c, int d)
+
+function maybe4.copy() returns maybe4
+    // return maybe4(this.count, this.a, this.b, this.c, this.d)
+    return this
+
+interface Maybe4Closure
+    function do(int val)
+
+interface Maybe4ClosureBoolexpr
+    function check(int val) returns bool
+
+interface QuadTreeClosure<T>
+    function do(vec2 where, T t)
+
+function maybe4.for_each(Maybe4Closure cl)
+    if this.count == HAVE_4SECTED or this.count > 0
+        cl.do(this.a)
+
+        if this.count == HAVE_4SECTED or this.count > 1
+            cl.do(this.b)
+
+            if this.count == HAVE_4SECTED or this.count > 2
+                cl.do(this.c)
+
+                if this.count == HAVE_4SECTED or this.count > 3
+                    cl.do(this.d)
+
+tuple maybe_int(bool have, int v)
+
+function maybe4.find(Maybe4ClosureBoolexpr cl) returns maybe_int
+    assertTrue(this.count == HAVE_4SECTED)
+    return cl.check(this.a) ? maybe_int(true, this.a)
+        : ( cl.check(this.b) ? maybe_int(true, this.b)
+            : ( cl.check(this.c) ? maybe_int(true, this.c)
+                : ( cl.check(this.d) ? maybe_int(true, this.d)
+                    : maybe_int(false, 0)
+                )
+            )
+        ) 
+
+class QuadTreeValue<T>
+    vec2 where
+    T t
+    construct(vec2 where, T t)
+        this.where = where
+        this.t = t
+
+/** Stores Ts, keyed spatially by vec2. */
+public class QuadTree<T>
+    rect bounding_box
+    maybe4 vals
+
+    construct()
+        this.bounding_box = bj_mapInitialPlayableArea.copy()
+        this.vals = EMPTY4
+ 
+    /** Takes ownership of r, and destroys it when the tree 4sects. */
+    construct(rect r)
+        this.bounding_box = r
+        this.vals = EMPTY4
+
+    // Returns the appropriate child tree for the provided spatial key.
+    private function get_child(vec2 where) returns QuadTree<T>
+        let res = this.vals.find() (int val) ->
+            let tree = val castTo QuadTree<T>
+            return tree.bounding_box.contains(where)
+
+        assertTrue(res.have)
+        return res.v castTo QuadTree<T>
+
+    // Generate children, move vals into children, reuse vals as children.
+    private function do_4sect()
+        let a = new QuadTree<T>(this.bounding_box.copy().into_top_left_quadrant())
+        let b = new QuadTree<T>(this.bounding_box.copy().into_top_right_quadrant())
+        let c = new QuadTree<T>(this.bounding_box.copy().into_bot_left_quadrant())
+        let d = new QuadTree<T>(this.bounding_box.copy().into_bot_right_quadrant())
+
+        let ts = this.vals.copy()
+        this.vals = maybe4(HAVE_4SECTED, a castTo int, b castTo int, c castTo int, d castTo int)
+
+        ts.for_each() (int val) ->
+            let v = val castTo QuadTreeValue<T>
+            this.put(v.where, v.t)
+
+    function put(vec2 where, T t)
+        switch this.vals.count
+            case HAVE_4SECTED
+                get_child(where).put(where, t)
+            case 0
+                this.vals = maybe4(1, new QuadTreeValue<T>(where, t) castTo int, 0, 0, 0)
+            case 1
+                this.vals = maybe4(2, this.vals.a, new QuadTreeValue<T>(where, t) castTo int, 0, 0)
+            case 2
+                this.vals = maybe4(3, this.vals.a, this.vals.b, new QuadTreeValue<T>(where, t) castTo int, 0)
+            case 3
+                this.vals = maybe4(4, this.vals.a, this.vals.b, this.vals.c, new QuadTreeValue<T>(where, t) castTo int)
+            case 4
+                this.do_4sect()
+                this.put(where, t)
+            default
+                error("Tried to put when the maybe was " + this.vals.count.toString())
+    
+    /**
+        Borrows rect `where`, leaving it unchanged.  Provides an iterator over
+        each T found spatially in rect `where`.
+    */
+    function for_each(rect where, QuadTreeClosure<T> clo)
+        // Intersect test, find intersection, dispatch
+        let res = this.bounding_box.intersects(where)
+        if res.have
+            if vals.count == HAVE_4SECTED
+                this.vals.for_each() (int val) ->
+                    (val castTo QuadTree<T>).for_each(res.v, clo)
+            else
+                this.vals.for_each() (int val) ->
+                    let v = val castTo QuadTreeValue<T>
+                    if where.contains(v.where)
+                        clo.do(v.where, v.t)
+            res.v.remove()
+
+    private constant rct = Rect(-1., -1., 1., 1.)
+    /**
+        Provides an interator over eacth T found spatially in the circle at
+        (where, radius).
+    */
+    function for_each(vec2 where, real radius, QuadTreeClosure<T> clo)
+        rct.resize(where - vec2(radius, radius), where + vec2(radius, radius))
+
+        for_each(rct) (vec2 w, T t) ->
+            if w.distanceToSq(where) < radius * radius
+                clo.do(w, t)
+        
+
+@test function test()  // Seems to OOM :(
+    new QuadTree<int>(Rect(-500., -500., 500., 500.))
+        ..put(vec2(-1., -1.),  3)
+        ..put(vec2(-3., -3.),  7)
+        ..put(vec2(-5., -5.), 11)
+        ..put(vec2(-7., -7.), 15)
+        ..put(vec2( 1.,  1.),  2)
+        ..put(vec2( 5.,  5.),  6)
+        ..for_each(Rect(-500., -500., 0., 0.)) (vec2 where, integer t) ->
+            assertTrue(t % 2 == 1)
